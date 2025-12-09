@@ -35,8 +35,8 @@ def keep_alive():
 # ==========================================
 # جلب المفاتيح من متغيرات البيئة في Render (للأمان)
 # إذا كنت تجربه على جهازك، استبدل النص داخل الأقواس بمفاتيحك مباشرة
-API_KEY = "LzZ6ZBQwUxx3YlAYRyICHQ1bxoRH8rtI4hI65kFtt2ZJvVfTekvq8v2kD4lrUvOs"
-SECRET_KEY = "75MrvWUwhmBfcNc1EyEDo82wPwct3t6TpStBIMyBcJjrky0rHVRW2dEQLi6grugT"
+API_KEY = os.environ.get("API_KEY")
+SECRET_KEY = os.environ.get("SECRET_KEY")
 
 SYMBOL = 'BTC/USDT'
 LEVERAGE = 5            # الرافعة المالية (تجريبية)

@@ -6,7 +6,7 @@ import numpy as np
 import time
 import os
 import sys
-import requests  # 👈 مكتبة جديدة للإرسال
+import requests
 from datetime import datetime
 from flask import Flask
 from threading import Thread
@@ -32,18 +32,16 @@ def keep_alive():
 # ==========================================
 # ⚙️ 2. إعدادات البوت والاتصال
 # ==========================================
-# جلب المفاتيح من Render
 API_KEY = os.environ.get("API_KEY")
 SECRET_KEY = os.environ.get("SECRET_KEY")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") # 👈 جلب التوكن
-CHAT_ID = os.environ.get("CHAT_ID")               # 👈 جلب الآيدي
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
 SYMBOL = 'BTC/USDT'
 LEVERAGE = 5
 RISK_PER_TRADE = 0.02
 CONFIDENCE_THRESHOLD = 0.65
 
-# دالة إرسال الرسائل
 def send_msg(text):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     try:
@@ -57,7 +55,10 @@ def get_exchange():
         'apiKey': API_KEY,
         'secret': SECRET_KEY,
         'enableRateLimit': True,
-        'options': {'defaultType': 'swap'}
+        'options': {
+            'defaultType': 'swap',  # مهم جداً للعقود الآجلة
+            'adjustForTimeDifference': True
+        }
     })
     exchange.set_sandbox_mode(True)
     return exchange
@@ -85,44 +86,50 @@ def feature_engineering_v7(df):
     return data
 
 def get_market_data(exchange):
-    bars = exchange.fetch_ohlcv(SYMBOL, timeframe='1h', limit=500)
-    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    
-    bars_4h = exchange.fetch_ohlcv(SYMBOL, timeframe='4h', limit=100)
-    df_4h = pd.DataFrame(bars_4h, columns=['ts', 'o', 'h', 'l', 'close_4h', 'v'])
-    
+    # استخدام try-except هنا أيضاً لتجنب توقف البوت بسبب أخطاء الاتصال العابرة
     try:
-        fund = float(exchange.fetch_funding_rate(SYMBOL)['fundingRate'])
-    except:
-        fund = 0.0001
+        bars = exchange.fetch_ohlcv(SYMBOL, timeframe='1h', limit=500)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         
-    data = df.copy()
-    last_4h_close = df_4h.iloc[-1]['close_4h']
-    
-    data['Returns'] = np.log(data['close'] / data['close'].shift(1))
-    data['Range'] = (data['high'] - data['low']) / data['open']
-    data['Vol_1H'] = data['Returns'].rolling(24).std()
-    data['Vol_4H_Proxy'] = data['Returns'].rolling(24).std()
-    data['Vol_Ratio'] = data['Vol_1H'] / (data['Vol_4H_Proxy'] + 1e-9)
-    data['Close_Loc'] = (data['close'] - data['low']) / (data['high'] - data['low'] + 1e-9)
-    data['Volume_Flow'] = np.where(data['Close_Loc'] > 0.5, data['volume'], -data['volume'])
-    data['CVD_Proxy'] = data['Volume_Flow'].rolling(12).sum()
-    data['RSI'] = data.ta.rsi(length=14)
-    data['MFI'] = data.ta.mfi(length=14)
-    data['ADX'] = data.ta.adx(length=14)['ADX_14']
-    change = data['close'].diff(10).abs()
-    volatility = data['close'].diff().abs().rolling(10).sum()
-    data['Efficiency_Ratio'] = change / (volatility + 1e-9)
-    
-    data['Funding_x_Vol'] = fund * data['Vol_1H']
-    data['Trend_4H'] = 1 if data['close'].iloc[-1] > last_4h_close else 0
-    data['fundingRate'] = fund
-    
-    return data.iloc[-1]
+        bars_4h = exchange.fetch_ohlcv(SYMBOL, timeframe='4h', limit=100)
+        df_4h = pd.DataFrame(bars_4h, columns=['ts', 'o', 'h', 'l', 'close_4h', 'v'])
+        
+        try:
+            fund = float(exchange.fetch_funding_rate(SYMBOL)['fundingRate'])
+        except:
+            fund = 0.0001
+            
+        data = df.copy()
+        last_4h_close = df_4h.iloc[-1]['close_4h']
+        
+        data['Returns'] = np.log(data['close'] / data['close'].shift(1))
+        data['Range'] = (data['high'] - data['low']) / data['open']
+        data['Vol_1H'] = data['Returns'].rolling(24).std()
+        data['Vol_4H_Proxy'] = data['Returns'].rolling(24).std()
+        data['Vol_Ratio'] = data['Vol_1H'] / (data['Vol_4H_Proxy'] + 1e-9)
+        data['Close_Loc'] = (data['close'] - data['low']) / (data['high'] - data['low'] + 1e-9)
+        data['Volume_Flow'] = np.where(data['Close_Loc'] > 0.5, data['volume'], -data['volume'])
+        data['CVD_Proxy'] = data['Volume_Flow'].rolling(12).sum()
+        data['RSI'] = data.ta.rsi(length=14)
+        data['MFI'] = data.ta.mfi(length=14)
+        data['ADX'] = data.ta.adx(length=14)['ADX_14']
+        change = data['close'].diff(10).abs()
+        volatility = data['close'].diff().abs().rolling(10).sum()
+        data['Efficiency_Ratio'] = change / (volatility + 1e-9)
+        
+        data['Funding_x_Vol'] = fund * data['Vol_1H']
+        data['Trend_4H'] = 1 if data['close'].iloc[-1] > last_4h_close else 0
+        data['fundingRate'] = fund
+        
+        return data.iloc[-1]
+    except Exception as e:
+        print(f"⚠️ Error fetching data: {e}")
+        return None
 
 def check_open_positions(exchange):
     try:
+        # جلب المراكز بطريقة آمنة
         positions = exchange.fetch_positions([SYMBOL])
         for pos in positions:
             if float(pos['contracts']) > 0:
@@ -150,7 +157,13 @@ def run_bot_logic():
     
     try:
         exchange = get_exchange()
-        exchange.set_leverage(LEVERAGE, SYMBOL)
+        # 🟢 الإصلاح: محاولة ضبط الرافعة وتجاهل الخطأ إن وجد
+        try:
+            exchange.set_leverage(LEVERAGE, SYMBOL)
+            print(f"✅ Leverage set to {LEVERAGE}x")
+        except Exception as e:
+            print(f"⚠️ Warning: Cannot set leverage via API ({e}). Using account default.")
+
         print(f"✅ Connected to Testnet.")
     except Exception as e:
         print(f"❌ Connection Error: {e}")
@@ -169,6 +182,10 @@ def run_bot_logic():
             
             # تحليل السوق
             row = get_market_data(exchange)
+            if row is None:
+                time.sleep(60)
+                continue
+
             features = [
                 'RSI', 'MFI', 'ADX', 'Efficiency_Ratio', 
                 'Vol_Ratio', 'CVD_Proxy', 'fundingRate', 
@@ -220,8 +237,8 @@ def run_bot_logic():
             time.sleep(60)
 
         except Exception as e:
-            print(f"❌ Error: {e}")
-            send_msg(f"⚠️ **Bot Error:** {str(e)}") # إرسال الخطأ لك لتنتبه
+            print(f"❌ Error in loop: {e}")
+            # send_msg(f"⚠️ **Bot Error:** {str(e)}") # يمكن تفعيلها إذا أردت تنبيهات للأخطاء
             time.sleep(60)
 
 if __name__ == "__main__":
